@@ -4,12 +4,15 @@ import $ from "jquery";
 //test
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import {fetchFile, toBlobURL} from '@ffmpeg/util';
+//Todo: Syncronisation Seeked (Empfänger -> Sender "Seekready")
 
 let bufferedChunksSender = 0; //Nur für den Sender Relevant
 let bufferedChunksReceiver = 0; //Nur für den Empfänger Relevant
 let MetaEntryReceiver: MetaEntry[] = []; //Nur für den Empfänger Relevant
 let mediaSourceStateAllPeers = [];
-
+let seekedStateAllPeers = [];
+let lokalIndexForChunksSender = 0; //Nur für den Sender Relevant
+let MediaMetadata: MetaEntry[] = [];
 
 async function processVideoChunks(src: string) {
   const ffmpeg = new FFmpeg();
@@ -125,10 +128,15 @@ function combineMetaAndParse(meta: string, metaDuration: string): MetaEntry[] {
   return result;
 }
 
-async function loadVideoChunks(ffmpeg: FFmpeg, uniqueIdentifier: string, chunk: number) {
+async function loadVideoChunks(ffmpeg: FFmpeg, uniqueIdentifier: string, chunk: number, header: boolean = false): Promise<Uint8Array> {
+  if(!header){
   const chunkStr = chunk.toString().padStart(3, '0');
   const data = await fetchFile(new Blob([(await ffmpeg.readFile(`${uniqueIdentifier}_${chunkStr}.webm`))]));
   return data;
+  }else{
+    const data = await fetchFile(new Blob([(await ffmpeg.readFile(`init_header_${uniqueIdentifier}.webm`))]));
+    return data;
+  }
 }
 
 
@@ -166,6 +174,11 @@ type ChunkMessage = {
   data: Uint8Array;
 };
 
+type PlayerDuration = {
+  type: "playerDuration";
+  duration: number;
+};
+
 type HeaderMessage = {
   type: "header";
   start: number;
@@ -187,7 +200,17 @@ type EndOfStream = {
   flag: boolean;
 }
 
-type Message = PeersMessage | StateMessage | ChunkMessage | HeaderMessage | ResettingMediaSource | MediaSourceReady | EndOfStream;
+type Seeked = {
+  type: "seeked";
+  time: number;
+}
+
+type ReadyToSeek = {
+  type: "readyToSeek";
+  flag: boolean;
+}
+
+type Message = PeersMessage | StateMessage | ChunkMessage | HeaderMessage | ResettingMediaSource | MediaSourceReady | EndOfStream | PlayerDuration | Seeked | ReadyToSeek;
 
 let state = new State();
 
@@ -211,23 +234,18 @@ let bufferQueue: Uint8Array[] = []; // Warteschlange für Chunks
 
 // Default source
 player.src = defaultVideoURL;
-// Fallback
-player.addEventListener("error", () => {
-  console.error("Error loading video. Using default source.");
-  player.src = defaultVideoURL;
-});
 
 function canAddToBuffer(chunkSize: number): boolean {
   return currentBufferSize.totalBufferSize + chunkSize <= MAX_BUFFER_SIZE;
 }
 
-function updateBufferSize(change: number, addToLocalChunk: boolean, addNewChunk: boolean): void {
+function updateBufferSize(change: number, addToLocalChunk: boolean, addNewChunk: boolean, removeAllChunks: boolean): void {
   if (addToLocalChunk) {
     currentBufferSize.chunkSizes[currentBufferSize.chunkSizes.length - 1] += change;
     currentBufferSize.totalBufferSize += change;
     triggerConditionCheck();
   }
-  else if(!addToLocalChunk && !addNewChunk){ 
+  else if(!addToLocalChunk && !addNewChunk && !removeAllChunks){ 
     currentBufferSize.totalBufferSize -= currentBufferSize.chunkSizes[0];
     currentBufferSize.chunkSizes.shift();
   }
@@ -235,11 +253,23 @@ function updateBufferSize(change: number, addToLocalChunk: boolean, addNewChunk:
     currentBufferSize.chunkSizes.push(change);
     currentBufferSize.totalBufferSize += change;
   }
+  else if(removeAllChunks){
+    console.log("Remove all chunks from buffer and Resetting Variables");
+    currentBufferSize.chunkSizes = [];
+    currentBufferSize.totalBufferSize = 0;
+    MetaEntryReceiver = [];
+    bufferedChunksReceiver = 0;
+  }
   console.log(`Buffer size updated: ${currentBufferSize.totalBufferSize} bytes`, currentBufferSize.chunkSizes);
 }
 
 function updateMediaSourceStateAllPeers(flag: boolean) {
   mediaSourceStateAllPeers.push(flag);
+  triggerConditionCheck();
+}
+
+function allPeersReadyToSeek(flag: boolean) {
+  seekedStateAllPeers.push(flag);
   triggerConditionCheck();
 }
 
@@ -311,6 +341,18 @@ async function on_data(conn: DataConnection, msg: Message) {
       break;
     case "endOfStream":
       onEndOfStreamRecived(msg.flag);
+      break;
+    case "playerDuration":
+      onPlayerDurationReceived(msg.duration);
+      break;
+    case "seeked":
+      await onSeekedReceived(msg.time);
+      broadcastReadyToSeek(true);
+      break;
+    case "readyToSeek":
+      if(msg.flag){
+        allPeersReadyToSeek(msg.flag);
+      }
       break;
   }
 }
@@ -387,18 +429,25 @@ function broadcast_state() {
   }
 }
 
+async function onPlayerDurationReceived(duration: number) {
+  if (!sourceBuffer || mediaSource.readyState !== "open") {
+    console.warn("SourceBuffer or MediaSource not ready. Can not set player duration.");
+    await waitForEventOrCondition(sourceBuffer, "updateend", () => !sourceBuffer.updating);
+  }
+  mediaSource.duration = duration;
+}
+
 function onHeaderReceived(start: number, end: number) {
   MetaEntryReceiver.push({start: start, end: end});
-  updateBufferSize(0, false, true);
+  updateBufferSize(0, false, true, false);
   bufferedChunksReceiver++;
 }
 
 function onChunkReceived(chunk: Uint8Array) {
-  if (!sourceBuffer || mediaSource.readyState !== "open") {
-    console.warn("SourceBuffer or MediaSource not ready. Resetting.");
+  if(!bufferQueue){
+    console.warn("BufferQueue not initialized");
     return;
   }
-
   bufferQueue.push(chunk); // Chunk zur Warteschlange hinzufügen
   console.log("received chunk", chunk.length);
   processBufferQueue();
@@ -408,6 +457,14 @@ async function processBufferQueue() {
   console.log("Processing buffer queue...");
   if (!sourceBuffer) {
     console.warn("SourceBuffer is not initialized.");
+    return;
+  }
+  if (!mediaSource) {
+    console.warn("MediaSource is not initialized.");
+    return;
+  }
+  if (mediaSource.readyState !== "open") {
+    console.warn("MediaSource is not open. Cannot process buffer queue.");
     return;
   }
 
@@ -425,13 +482,13 @@ async function processBufferQueue() {
   const chunk = bufferQueue.shift()!;
   try {
     sourceBuffer.appendBuffer(chunk);
-    updateBufferSize(chunk.byteLength, true, false);    
+    updateBufferSize(chunk.byteLength, true, false, false);    
     console.log("Chunk appended successfully:", chunk.byteLength, "bytes in buffer:", currentBufferSize );
 
   } catch (error) {
     console.error("Error appending buffer:", error);
     bufferQueue.unshift(chunk); // Füge den Chunk zurück in die Warteschlange
-    setTimeout(() => processBufferQueue(), 100); // Versuche es später erneut
+    return;
   }
 }
 
@@ -451,7 +508,7 @@ document.querySelector("#play")?.addEventListener("click", async (event) => {
   console.log("Streaming file:", file.name, "Blob URL:", blobSource);
   let result = await processVideoChunks(blobSource)
   let totalNumberOfChunks = result.chunkCount;
-  let MediaMetadata = result.metaEntries;
+  MediaMetadata = result.metaEntries;
   let uniqueIdentifier = result.uniqueIdentifier;
   let ffmpeg = result.ffmpeg;
   broadcastResettingMediaSource(true);
@@ -459,25 +516,26 @@ document.querySelector("#play")?.addEventListener("click", async (event) => {
   console.log("Waiting for all peers to reset MediaSource...");
   const waitForMediaSourceReady = await waitForCondition(() => mediaSourceStateAllPeers.length === connections.size + 1);//Der Initator wird nicht als Peer gezählt deshalb +1
   console.log("All peers are ready to reset MediaSource.", mediaSourceStateAllPeers.length, " === ",connections.size + 1, " Time:", waitForMediaSourceReady);
-
+  console.log("Broadcasting player duration:", MediaMetadata[MediaMetadata.length-1].end);
+  broadcastPlayerDuration(MediaMetadata[MediaMetadata.length-1].end);
   //Frage länge von sourcebuffer.buffered ab, solange weniger als 5 Chunks im Buffer sind lade weitere Chunks
- let lokalIndexForChunks = 0;  //Nur für den Sender Relevant
+ lokalIndexForChunksSender = 0;  //Nur für den Sender Relevant
  bufferedChunksSender = 0;       //Nur für den Sender Relevant
- while(lokalIndexForChunks < totalNumberOfChunks || bufferedChunksSender < 6){ {
+ while(lokalIndexForChunksSender < totalNumberOfChunks || bufferedChunksSender < 6){ {
     console.log("Buffered chunks:", bufferedChunksSender);
     if(bufferedChunksSender >= 5){ 
       const timeToLoadNewChunks = await waitForCondition(() => bufferedChunksSender < 5);
       console.log("Time to load new chunks:", timeToLoadNewChunks);
       continue;
     }
-    const chunkData = await loadVideoChunks(ffmpeg, uniqueIdentifier, lokalIndexForChunks);
-    broadcastHeader(MediaMetadata[lokalIndexForChunks].start, MediaMetadata[lokalIndexForChunks].end);
+    const chunkData = await loadVideoChunks(ffmpeg, uniqueIdentifier, lokalIndexForChunksSender);
+    broadcastHeader(MediaMetadata[lokalIndexForChunksSender].start, MediaMetadata[lokalIndexForChunksSender].end);
     startSendingChunks(chunkData);
-    lokalIndexForChunks++;
+    lokalIndexForChunksSender++;
     bufferedChunksSender++;
     const zwsTimeResolve = await waitForCondition(() => currentBufferSize.chunkSizes[currentBufferSize.chunkSizes.length - 1] === chunkData.byteLength);
     console.log("Video chunk length:", chunkData.byteLength, " Buffered chunk sizes:", currentBufferSize.chunkSizes[currentBufferSize.chunkSizes.length - 1], "Time:", zwsTimeResolve);
-    if(lokalIndexForChunks >= totalNumberOfChunks){
+    if(lokalIndexForChunksSender >= totalNumberOfChunks){
       broadcastEndOfStream(true);
       break;
     }
@@ -519,6 +577,20 @@ function broadcastChunk(chunk: Uint8Array) {
     conn.send({
       type: "chunk",
       data: chunk,
+    });
+  }
+}
+
+function broadcastPlayerDuration(duration: number) {
+  //local append
+  console.log("Set duration locally for the initiator.");
+  onPlayerDurationReceived(duration);
+  
+  for (const conn of connections.values()) {
+    console.log(`Sending chunk to peer: ${conn.peer}`);
+    conn.send({
+      type: "playerDuration",
+      duration: duration,
     });
   }
 }
@@ -568,6 +640,70 @@ async function onEndOfStreamRecived(flag: boolean) {
   }
 }
 
+//Wenn seeked außerhalb des Buffers ist wird der Buffer geleert(Komplett)
+//Suche VideoSegment welches am nächsten an der seeked Position ist und lade dieses
+//Setzte Variablen fürs Streaming auf neue Werte
+//!!!!!!!ENDING MEDIA SOURCE PORBLEM!!!!!!!!!!!!
+async function onSeekedReceived(currentTime: number): Promise<void> {
+  console.log("Seeked received:", currentTime);
+  if (MetaEntryReceiver.length < 1) {
+    console.log("No MetaEntries available. Cannot seek.");
+    return;
+  }
+  if (currentTime > MetaEntryReceiver[0].start && currentTime < MetaEntryReceiver[MetaEntryReceiver.length - 1].end) {
+    console.log("Seeked position is within the buffered range.");
+    return;
+  }
+  console.log("Seeked position is outside the buffered range. Clear Buffer");
+  await removeAllChunksFromSourceBuffer();
+  // Zurückgesetzt werden MetaEntryReceiver, bufferedChunksReceiver, 
+  // currentBufferSize(chunkSizes, totalBufferSize)
+  console.log("Buffer cleared. Seeking to new position.");
+  // zu verändernde Variablen bufferedChunksSender, lokalIndexForChunksSender
+  if (MediaMetadata.length < 1) {
+    console.log("No MetaEntries available. Cannot seek.");
+    return;
+  }
+
+  let targetIndex = -1;
+  for (let i = 0; i < MediaMetadata.length; i++) {
+    if (currentTime >= MediaMetadata[i].start && currentTime <= MediaMetadata[i].end) {
+      console.log("Seeked position:", currentTime, "Segment start:", MediaMetadata[i].start, "Segment end:", MediaMetadata[i].end);
+      targetIndex = i;
+      break;
+    }
+  }
+
+  if (targetIndex === -1) {
+    console.log("No suitable segment found for the seeked position.");
+    return;
+  }
+  lokalIndexForChunksSender = targetIndex;
+  //An diesem Punkt muss es sich um den Sender handeln
+  //RESET bufferedChunksSender: Triggered, dass von neuem gesendet wird
+  //Erst wenn alle anderen Peers in einem Konsistenten Zustand sind
+  //Initator ist zu diesem Punkt schon in einem Konsistenten Zustand d.h. nur connections.size
+  if (connections.size > 0) {  
+    const waitForSeekReady = await waitForCondition(() => allPeersReadyToSeek.length === connections.size);
+    console.log("All peers are ready to seek.", allPeersReadyToSeek.length, " === ", connections.size, " Time:", waitForSeekReady);
+  }
+  seekedStateAllPeers = []; //Alle Peers sind bereit zum Seeken zurücksetzen
+  decrementBufferedChunksSender(true);
+  
+}
+
+async function broadcastSeeked(currentTime: number) {
+  seekedStateAllPeers = [];
+  for (const conn of connections.values()) {
+    conn.send({
+      type: "seeked",
+      time: currentTime,
+    });
+  }
+  console.log("Set seeked Position for Initator");
+  await onSeekedReceived(currentTime);
+}
+
 async function broadcastResettingMediaSource(flag: boolean) {
   //local reset
   console.log("Resetting MediaSourceAllPeers");
@@ -595,7 +731,21 @@ function broadcastMediaSourceReady(flag: boolean) {
   }
 }
 
+function broadcastReadyToSeek(flag: boolean) {
+  for (const conn of connections.values()) {
+    conn.send({
+      type: "readyToSeek",
+      flag: flag,
+    });
+  }
+}
+
 async function resetMediaSourceCompletely() {
+  //Setzte Variablen fürs Streaming auf Empfängeseite zurück
+  MetaEntryReceiver = [];
+  bufferedChunksReceiver = 0;
+  seekedStateAllPeers = [];
+  updateBufferSize(0, false, false, true);
   if (mediaSource.readyState === "open") {
     try {
       mediaSource.endOfStream();
@@ -683,7 +833,7 @@ function removeChunkFromSourceBuffer() {
     try {
       console.log("Removing first chunk from SourceBuffer");
       sourceBuffer.remove(MetaEntryReceiver[bufferedChunksReceiver-5].start, MetaEntryReceiver[bufferedChunksReceiver-5].end);
-      updateBufferSize(currentBufferSize.chunkSizes[0], false, false); //Entferne den ersten Chunk aus dem Buffer
+      updateBufferSize(currentBufferSize.chunkSizes[0], false, false, false); //Entferne den ersten Chunk aus dem Buffer
       sourceBuffer.addEventListener("updateend", () => {
         console.log("Chunk removed successfully.");
         resolve();
@@ -693,6 +843,26 @@ function removeChunkFromSourceBuffer() {
       setTimeout(() => removeChunkFromSourceBuffer().then(resolve).catch(reject), 100);
     }
   });
+}
+
+async function removeAllChunksFromSourceBuffer(): Promise<void> {
+  console.log("MetaEntryReceiver: ", MetaEntryReceiver);
+  for (let i = 0; i < MetaEntryReceiver.length; i++) {
+    if (sourceBuffer.updating) {
+      console.log("SourceBuffer is updating.");
+      let timeForUpdate = await waitForEventOrCondition(sourceBuffer, "updateend", () => !sourceBuffer.updating);
+      console.log("SourceBuffer update completed in ", timeForUpdate, "ms");
+    }
+    try {
+      sourceBuffer.remove(MetaEntryReceiver[i].start, MetaEntryReceiver[i].end);
+      console.log("Removing ", i, "chunk from SourceBuffer");
+      await waitForEventOrCondition(sourceBuffer, "updateend", () => !sourceBuffer.updating);
+    } catch (error) {
+      console.error("Error removing buffer:", error);
+      setTimeout(() => removeAllChunksFromSourceBuffer(), 100);
+    }
+  }
+  updateBufferSize(0, false, false, true);
 }
 
 function waitForCondition(condition: () => boolean): Promise<number> {
@@ -747,8 +917,13 @@ function triggerConditionCheck() {
   }
 }
 
-function decrementBufferedChunksSender() {
-  bufferedChunksSender--;
+function decrementBufferedChunksSender(reset: boolean = false) {
+  if(reset){
+    bufferedChunksSender = 0;
+  }
+  else{
+    bufferedChunksSender--;
+  }
   triggerConditionCheck();
 }
 
@@ -761,7 +936,13 @@ player.addEventListener("pause", () => {
   console.log("Player is paused.");
   broadcast_state();
 });
-player.addEventListener("seeked", () => broadcast_state());
+
+player.addEventListener("seeking", () => {
+  console.log("Player try to seeked to:", player.currentTime);
+  seekedStateAllPeers = [];
+  broadcast_state();
+  broadcastSeeked(player.currentTime);
+});
 
 window.addEventListener("resize", () => {
   const videoContainer = document.querySelector(".video-container") as HTMLDivElement;
