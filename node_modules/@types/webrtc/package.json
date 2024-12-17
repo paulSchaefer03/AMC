@@ -1,0 +1,47 @@
+{
+    "name": "@types/webrtc",
+    "version": "0.0.44",
+    "description": "TypeScript definitions for webrtc",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/webrtc",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": "Toshiya Nakakura",
+            "githubUsername": "nakakura",
+            "url": "https://github.com/nakakura"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "typesVersions": {
+        "<=5.0": {
+            "*": [
+                "ts5.0/*"
+            ]
+        },
+        "<=5.3": {
+            "*": [
+                "ts5.3/*"
+            ]
+        },
+        "<=5.4": {
+            "*": [
+                "ts5.4/*"
+            ]
+        },
+        "<=5.6": {
+            "*": [
+                "ts5.6/*"
+            ]
+        }
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/webrtc"
+    },
+    "scripts": {},
+    "dependencies": {},
+    "typesPublisherContentHash": "8f66fae3c47b8240147f078fa1c83fec54d9682b49869b8e9179a682b9140736",
+    "typeScriptVersion": "4.9"
+}
