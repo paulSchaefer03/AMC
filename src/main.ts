@@ -15,8 +15,9 @@ let lokalIndexForChunksSender = 0; //Nur für den Sender Relevant
 let MediaMetadata: MetaEntry[] = [];
 const MAX_BUFFER_SIZE = 25 * 1024 * 1024; // 25 MB
 const chunkSize = 256 * 1024; // 256 KB
-
-
+//const mimeCodec = 'video/webm; codecs="av01.0.08M.08, opus"'; // AV1 Codec
+const mimeCodec = 'video/webm; codecs="vp8, vorbis"'; // VP8 Codec
+//const mimeCodec = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'; // H.264 Codec
 //Wenn man das effizenter Macht sollte man SEHR große Videos laden können
 async function processVideoChunks(src: string) {
   const ffmpeg = new FFmpeg();
@@ -58,7 +59,8 @@ async function processVideoChunks(src: string) {
   const uniqueIdentifier = `video_${Date.now()}`;
 await ffmpeg.exec([
     '-i',
-    'input.webm',               // Eingabedatei
+    'input.webm',             // Eingabedatei
+//    '-pix_fmt', 'yuv420p',     // Pixel-Format 
     '-f',
     'segment',                  // Segmentierungsmodus
     '-segment_time',
@@ -236,6 +238,7 @@ let resolveCondition: (() => void) | null = null;
 
 const player = document.querySelector("#video")! as HTMLVideoElement;
 const defaultVideoURL = "https://box.open-desk.net/Big Buck Bunny [YE7VzlLtp-4].mp4";
+//const defaultVideoURL = "https://ftp.nluug.nl/pub/graphics/blender/demo/movies/ToS/tearsofsteel_4k.mov";
 
 let mediaSource = new MediaSource();
 let sourceBuffer: SourceBuffer;
@@ -282,7 +285,6 @@ function allPeersReadyToSeek(flag: boolean) {
 }
 
 mediaSource.addEventListener("sourceopen", () => {
-  const mimeCodec = 'video/webm; codecs="vp8, vorbis"';
   if (!MediaSource.isTypeSupported(mimeCodec)) {
     console.error("Unsupported MIME type or codec:", mimeCodec);
     return;
@@ -782,7 +784,6 @@ async function resetMediaSourceCompletely() {
     mediaSource.addEventListener(
       "sourceopen",
       () => {
-        const mimeCodec = 'video/webm; codecs="vp8, vorbis"';
         if (!MediaSource.isTypeSupported(mimeCodec)) {
           console.error("Unsupported MIME type or codec:", mimeCodec);
           reject(new Error("Unsupported MIME type or codec"));
