@@ -15,7 +15,7 @@ let lokalIndexForChunksSender = 0; //Nur für den Sender Relevant
 let MediaMetadata: MetaEntry[] = [];
 const MAX_BUFFER_SIZE = 25 * 1024 * 1024; // 25 MB
 const chunkSize = 256 * 1024; // 256 KB
-//const mimeCodec = 'video/webm; codecs="av01.0.08M.08, opus"'; // AV1 Codec
+//const mimeCodec = 'video/webm; codecs="av01.0.08M.08", opus'; // AV1 Codec opus (Sämtliche Header Durations sind FALSCH für AV1)
 const mimeCodec = 'video/webm; codecs="vp8, vorbis"'; // VP8 Codec
 //const mimeCodec = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'; // H.264 Codec
 //Wenn man das effizenter Macht sollte man SEHR große Videos laden können
@@ -318,6 +318,10 @@ async function on_data(conn: DataConnection, msg: Message) {
       if (State.eq(msg.state, state)) {
         break;
       }
+      //Wir verändern den State des Players nur wenn der Buffer in einem Konsistenten Zustand ist
+      //Streng genommen muss der Buffer dirkt abgefragt werden
+      //await waitForCondition(() => MetaEntryReceiver.length > 1);
+      //await waitForCondition(() => msg.state.pos > MetaEntryReceiver[0].start && msg.state.pos < MetaEntryReceiver[MetaEntryReceiver.length - 1].end);
 
       state = msg.state;
 
@@ -449,6 +453,7 @@ async function onPlayerDurationReceived(duration: number) {
 
 function onHeaderReceived(start: number, end: number, chunkSize: number) {
   MetaEntryReceiver.push({start: start, end: end, byteLength: chunkSize});
+  //triggerConditionCheck();
   updateBufferSize(0, false, true, false);
 }
 
