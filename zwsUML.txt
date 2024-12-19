@@ -1,0 +1,142 @@
+@startuml
+autonumber
+
+skinparam ParticipantPadding 20
+skinparam BoxPadding 10
+
+box "User 1 (Initiator/Sender)" #lightblue
+    participant "Player" as U1Player
+    participant "MediaSource" as U1MediaSource
+    participant "BufferQueue" as U1BufferQueue
+    participant "SourceBuffer" as U1SourceBuffer
+    participant "ffmpeg.wasm" as U1FFmpeg
+    database "Speicher" as U1Speicher
+    database "Cache" as U1Cache
+end box
+
+box "User 2 (Receiver)" #lightgreen
+    participant "Player" as U2Player
+    participant "MediaSource" as U2MediaSource
+    participant "BufferQueue" as U2BufferQueue
+    participant "SourceBuffer" as U2SourceBuffer
+end box
+
+box "User 3 (Receiver)" #lightyellow
+    participant "Player" as U3Player
+    participant "MediaSource" as U3MediaSource
+    participant "BufferQueue" as U3BufferQueue
+    participant "SourceBuffer" as U3SourceBuffer
+end box
+
+
+
+group Start Chunks and Headers Generation
+    U1Player -> U1FFmpeg : Load Video File
+    U1Player -> U1FFmpeg : Generate Chunks + Headers
+    U1FFmpeg -> U1Speicher : Write Chunks (000.webm ...) + Headers
+    U1FFmpeg -> U1Player : Chunks + Headers Ready
+end
+
+group Reset MediaSources
+    U1Player -> U1MediaSource : Reset MediaSource
+    U1Player -> U2Player : Send Reset Request
+    U1Player -> U3Player : Send Reset Request
+
+    U2Player -> U2MediaSource : Reset MediaSource
+    U3Player -> U3MediaSource : Reset MediaSource
+
+    U2MediaSource -> U2Player : MediaSource Reset Done
+    U3MediaSource -> U3Player : MediaSource Reset Done
+
+    U2Player -> U1Player : Acknowledge Reset Complete
+    U3Player -> U1Player : Acknowledge Reset Complete
+
+    U1MediaSource -> U1Player : MediaSource Reset Done
+end
+
+group MainHeader Loading
+    U1Player -> U1Speicher : Read MainHeader File
+    U1Speicher -> U1Cache : Load MainHeader into Cache
+    U1Player -> U1BufferQueue : Send MainHeader
+    U1BufferQueue -> U1SourceBuffer : Append MainHeader
+    U1SourceBuffer -> U1MediaSource : Attach MainHeader
+    U1Player -> U2Player : Send MainHeader
+    U1Player -> U3Player : Send MainHeader
+
+    U2Player -> U2BufferQueue : Add MainHeader to Queue
+    U2BufferQueue -> U2SourceBuffer : Append MainHeader
+    U2SourceBuffer -> U2MediaSource : Attach MainHeader
+
+    U3Player -> U3BufferQueue : Add MainHeader to Queue
+    U3BufferQueue -> U3SourceBuffer : Append MainHeader
+    U3SourceBuffer -> U3MediaSource : Attach MainHeader
+end
+
+par "Parallel Execution"
+    group Video Chunk Streaming
+        loop While SourceBuffer < 5 Chunks
+            note right of U1Player : Check SourceBuffer count
+            group Chunk Header
+                U1Player -> U1Speicher : Read Header of Chunk_n
+                U1Speicher -> U1Cache : Load Chunk_n Header into Cache
+                U1Player -> U1BufferQueue : Send Chunk_n Header
+                U1BufferQueue -> U1SourceBuffer : Append Chunk_n Header
+                U1SourceBuffer -> U1MediaSource : Attach Chunk_n Header
+
+                U1Player -> U2Player : Send Chunk_n Header
+                U2Player -> U2BufferQueue : Add Header to Queue
+                U2BufferQueue -> U2SourceBuffer : Append Header
+                U2SourceBuffer -> U2MediaSource : Attach Header
+
+                U1Player -> U3Player : Send Chunk_n Header
+                U3Player -> U3BufferQueue : Add Header to Queue
+                U3BufferQueue -> U3SourceBuffer : Append Header
+                U3SourceBuffer -> U3MediaSource : Attach Header
+            end
+
+            group Video Chunk Transmission (Chunk_n)
+                U1Player -> U1Speicher : Load Video Chunk_n
+                U1Speicher -> U1Cache : Load into Cache
+
+                loop Until Chunk_n is fully sent
+                    U1Cache -> U1Player : Fetch smaller chunks of Chunk_n
+                    U1Player -> U1BufferQueue : Send smaller Chunk_i
+                    U1BufferQueue -> U1SourceBuffer : Append smaller Chunk_i
+                    U1SourceBuffer -> U1MediaSource : Attach smaller Chunk_i
+
+                    U1Player -> U2Player : Send smaller Chunk_i
+                    U2Player -> U2BufferQueue : Add smaller Chunk_i to Queue
+                    U2BufferQueue -> U2SourceBuffer : Append smaller Chunk_i
+                    U2SourceBuffer -> U2MediaSource : Attach smaller Chunk_i
+
+                    U1Player -> U3Player : Send smaller Chunk_i
+                    U3Player -> U3BufferQueue : Add smaller Chunk_i to Queue
+                    U3BufferQueue -> U3SourceBuffer : Append smaller Chunk_i
+                    U3SourceBuffer -> U3MediaSource : Attach smaller Chunk_i
+                end
+            end
+        end
+        note right of U1Player : Pausing transmission until buffer frees space
+    end
+
+    group Playback and Buffer Cleanup
+        group Player Start Playback
+            U1Player -> U2Player : Synchronize Start
+            U1Player -> U3Player : Synchronize Start
+        end
+
+        loop While Playing
+            note right of U1Player : Check currentTime >= Chunk_1.end
+            U1Player -> U1BufferQueue : Remove Chunk_0
+            U1BufferQueue -> U1SourceBuffer : Detach Chunk_0
+
+            U2Player -> U2BufferQueue : Remove Chunk_0
+            U2BufferQueue -> U2SourceBuffer : Detach Chunk_0
+
+            U3Player -> U3BufferQueue : Remove Chunk_0
+            U3BufferQueue -> U3SourceBuffer : Detach Chunk_0
+        end
+    end
+end
+
+@enduml
