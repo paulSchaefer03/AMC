@@ -1,0 +1,19 @@
+ffmpeg -i Big_Buck_Bunny_1080_10s_30MB.webm -c:v libsvtav1 -preset 4 -threads 0 -f null -
+In 1920x1080 WEBM
+Out fps 12
+ffmpeg -i Big_Buck_Bunny_1080_10s_30MB.webm -c:v libvpx-vp9 -crf 23 -preset 4 -threads 0 -f null -
+In 1920x1080 WEBM
+Out fps 4.1
+ffmpeg -i Big_Buck_Bunny_1080_10s_30MB.webm -c:v hevc_nvenc -preset p7 -f null -
+Out fps 140
+
+Live:
+ffmpeg -i Big_Buck_Bunny_1080_10s_30MB.webm -c:v libsvtav1 -preset 4 -threads 0 -c:a libopus AV1_OPUS_BBB_10s.webm
+
+ffmpeg -i Tears_of_Steel.webm -c:v libsvtav1 -preset 4 -threads 0 -c:a libopus AV1_OPUS_ToS_Full_Small.webm
+
+H:\Test_Videos_AMC\ToS-4k-1920.mov
+
+ffmpeg -i H:\Test_Videos_AMC\ToS-4k-1920.mov -c:v libsvtav1 -preset 2 -threads 0 -c:a libopus -b:a 192k AV1_OPUS_ToS_Full_4K_Render.webm
+
+ffmpeg -i H:\Test_Videos_AMC\tearsofsteel_4k.mov -c:v libsvtav1 -preset 2 -threads 0 -c:a libopus -b:a 192k AV1_OPUS_ToS_Full_4K.webm
