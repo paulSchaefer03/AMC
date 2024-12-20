@@ -6,7 +6,6 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import {fetchFile, toBlobURL} from '@ffmpeg/util';
 //TODO Komische douple seeking Events vom Player verhindern
 
-
 let bufferedBytesSender = 0; //Nur für den Sender Relevant
 let MetaEntryReceiver: MetaEntry[] = []; //Nur für den Empfänger Relevant
 let mediaSourceStateAllPeers = [];
@@ -15,8 +14,8 @@ let lokalIndexForChunksSender = 0; //Nur für den Sender Relevant
 let MediaMetadata: MetaEntry[] = [];
 const MAX_BUFFER_SIZE = 25 * 1024 * 1024; // 25 MB
 const chunkSize = 256 * 1024; // 256 KB
-//const mimeCodec = 'video/webm; codecs="av01.0.08M.08", opus'; // AV1 Codec opus (Sämtliche Header Durations sind FALSCH für AV1)
-const mimeCodec = 'video/webm; codecs="vp8, vorbis"'; // VP8 Codec
+const mimeCodec = 'video/webm; codecs="av01.0.08M.08", opus'; // AV1 Codec opus (Sämtliche Header Durations sind FALSCH für AV1)
+//const mimeCodec = 'video/webm; codecs="vp8, vorbis"'; // VP8 Codec
 //const mimeCodec = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'; // H.264 Codec
 //Wenn man das effizenter Macht sollte man SEHR große Videos laden können
 async function processVideoChunks(src: string) {
@@ -95,7 +94,9 @@ for (let i = 0; i < chunkCount; i++) {
     `metadata.txt`
   ]);
 }
-
+  if(mimeCodec.includes("av01")){//Fix für AV1 Codec
+    chunkCount--;
+  }
   console.log("META", meta);
   console.log("Test Meta", metaExaktDuration);
   const metaEntries = combineMetaAndParse(meta,metaExaktDuration, chunkSizes);
@@ -105,7 +106,9 @@ for (let i = 0; i < chunkCount; i++) {
 }
 
 function combineMetaAndParse(meta: string, metaDuration: string, chunkSizes: number[]): MetaEntry[] {
-  const metaLines = meta.trim().split("\n").slice(1); // Ignoriere den ersten Eintrag
+  let ignoreEntries = 1; // Ignoriere den ersten Eintrag standard für alle codecs
+
+  const metaLines = meta.trim().split("\n").slice(ignoreEntries); 
   const metaDurationLines = metaDuration
     .trim()
     .split("\n")
@@ -119,15 +122,23 @@ function combineMetaAndParse(meta: string, metaDuration: string, chunkSizes: num
     const exactDuration = metaDurationLines[index]; // Exakte Duration
 
     if (startMatch && exactDuration) {
-      const start = parseFloat(startMatch[1]);
+      let start = parseFloat(startMatch[1]);
 
       // Exakte Duration in Sekunden berechnen
       const durationParts = exactDuration.match(/(\d{2}):(\d{2}):(\d{2}\.\d{9})/);
       if (durationParts) {
         const [, hours, minutes, seconds] = durationParts;
-        const durationInSeconds =
+        let durationInSeconds =
           parseFloat(hours) * 3600 + parseFloat(minutes) * 60 + parseFloat(seconds);
 
+        if(mimeCodec.includes("av01")){//Fix für AV1 Codec
+          if(index === 1){
+            durationInSeconds = 0;
+          }
+          let zws = start;
+          start = durationInSeconds;
+          durationInSeconds = zws;
+        }
         result.push({
           start: start,
           end: durationInSeconds,
